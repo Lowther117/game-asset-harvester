@@ -1,0 +1,14 @@
+.venv/
+.venv-build/
+build/
+dist/
+*.spec
+backends/
+build-win-log.txt
+harvester-log.txt
+harvester-selftest.txt
+harvester-crash.log
+harvester-settings.json
+harvester-cache.json
+__pycache__/
+*.pyc
