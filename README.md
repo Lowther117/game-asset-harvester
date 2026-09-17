@@ -310,3 +310,7 @@ assets for redistribution is a different thing from looking at them to build a m
 This app does not ship anyone else's binary; it fetches each one from its own
 official release page, under that project's own licence (Apache-2.0, MIT and GPL-2.0
 between them).
+
+## Licence
+
+MIT No Attribution (MIT-0): do whatever you like with it - no credit needed, no warranty. See `LICENSE`.
