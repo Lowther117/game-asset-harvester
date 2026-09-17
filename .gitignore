@@ -12,3 +12,8 @@ harvester-settings.json
 harvester-cache.json
 __pycache__/
 *.pyc
+.harvester-write-test
+keys/
+keys.json
+mappings/
+scripts/

@@ -387,7 +387,12 @@ def install_backend(b: Backend, log: Callable[[str], None] = print, force: bool 
     if asset and b.github_repo:
         data = json.loads(_http_get(GITHUB_API.format(repo=b.github_repo)).decode("utf-8"))
         version = data.get("tag_name", "?")
-        urls, version = [_rank_assets([a for a in data.get("assets", [])], (asset,))], version
+        picked = [a for a in data.get("assets", []) if a.get("browser_download_url")
+                  and re.search(asset, a.get("name", ""), re.I)]
+        if not picked:      # never fall back to "the first asset" when one was asked for
+            raise RuntimeError(f"{b.name}: no asset in release {version} matches /{asset}/ - "
+                               f"run fetch-backends {b.key} --list to see the real names")
+        urls = [picked[0]["browser_download_url"]]
     elif b.github_repo:
         url, version = resolve_download(b, log)
         urls = [url]
@@ -415,12 +420,18 @@ def install_backend(b: Backend, log: Callable[[str], None] = print, force: bool 
     log(f"  {version} <- {url}")
     log(f"  {len(blob) / 1048576:.1f} MB downloaded")
 
+    name = url.rsplit("/", 1)[-1].lower()
+    # check BEFORE wiping the old copy: a block page or a cut-off download must not
+    # cost a working install
+    if (name.endswith(".zip") or blob[:2] == b"PK") and not zipfile.is_zipfile(io.BytesIO(blob)):
+        raise RuntimeError(_manual_install_message(
+            b, f"{url} did not return a zip file - blocked, or the download was cut short"))
+
     dest = b.install_dir
     if dest.exists():
         shutil.rmtree(dest, ignore_errors=True)
     dest.mkdir(parents=True, exist_ok=True)
 
-    name = url.rsplit("/", 1)[-1].lower()
     if name.endswith(".zip") or blob[:2] == b"PK":
         with zipfile.ZipFile(io.BytesIO(blob)) as zf:
             zf.extractall(dest)
@@ -485,12 +496,17 @@ def fetch_all(log: Callable[[str], None] = print, only: Iterable[str] | None = N
     return results
 
 
+# a windowed build has no console: without this every probe flashes one up
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+
+
 def dotnet_present() -> bool:
     exe = shutil.which("dotnet")
     if not exe:
         return False
     try:
-        out = subprocess.run([exe, "--list-runtimes"], capture_output=True, text=True, timeout=20)
+        out = subprocess.run([exe, "--list-runtimes"], capture_output=True, text=True, timeout=20,
+                             stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
         return "Microsoft.NETCore.App" in (out.stdout or "")
     except Exception:
         return False
@@ -504,7 +520,8 @@ def probe_help(b: Backend, timeout: int = 30) -> str:
     for flag in (["--help"], ["-h"], []):
         try:
             out = subprocess.run([str(exe)] + flag, capture_output=True, text=True,
-                                 timeout=timeout, cwd=str(exe.parent))
+                                 timeout=timeout, cwd=str(exe.parent),
+                                 stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
             text = (out.stdout or "") + (out.stderr or "")
             if text.strip():
                 return text.strip()

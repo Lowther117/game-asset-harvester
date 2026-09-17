@@ -126,13 +126,15 @@ def _split_extra(extra: str) -> list[str]:
         return []
     if os.name != "nt":
         return shlex.split(extra)
-    # non-posix mode keeps Windows backslashes intact but leaves the quotes on
-    # each token; strip them or the backend receives a literal "quoted path"
+    # Windows: backslashes are literal, and quotes group wherever they appear, so
+    # -path="C:\My Games\x" stays ONE token (shlex's non-posix mode only honours a
+    # quote at the start of a word and would split that in two). The quotes
+    # themselves are dropped or the backend receives a literal "quoted path".
     out = []
-    for tok in shlex.split(extra, posix=False):
-        if len(tok) >= 2 and tok[0] == tok[-1] and tok[0] in "\"'":
-            tok = tok[1:-1]
-        out.append(tok)
+    for tok in re.findall(r"(?:[^\s\"']|\"[^\"]*\"|'[^']*'|[\"'])+", extra):
+        out.append(re.sub(r"\"([^\"]*)\"|'([^']*)'",
+                          lambda m: m.group(1) if m.group(1) is not None else m.group(2),
+                          tok))
     return out
 
 
@@ -716,6 +718,7 @@ class Runner:
         self._key_cache: dict[str, aeskey.KeySearch] = {}
         self._probe_dir: Path | None = None
         self._probe_failed = False
+        self._converted = 0
         self.on_update = on_update or (lambda job: None)
         self._proc: subprocess.Popen | None = None
         self._cancel = threading.Event()
@@ -806,11 +809,12 @@ class Runner:
             self._probe_dir = out_dir
             self._probe_failed = False
             self.run_one(job, attempt_opts, announce=False)
+            self._probe_dir = None      # never let the probe leak into a later plain run
             if self._probe_failed:
                 job.status = "queued"
                 job.message = ""
                 continue
-            if count_converted(out_dir):
+            if self._converted:          # this attempt's own output, not an earlier run's
                 job.target = original_target
                 if attempt_opts.aes_key.strip() and job.game:
                     aeskey.remember(job.game, attempt_opts.aes_key)
@@ -839,6 +843,7 @@ class Runner:
         backend = REGISTRY.get(opts.backend_override or job.backend_key)
         job.started = time.time()
         job.status = "running"
+        self._converted = 0
         self.on_update(job)
         out_dir = job_output_dir(job, opts)
         job.out_dir = str(out_dir)
@@ -884,8 +889,11 @@ class Runner:
         rc = self._stream(argv, cwd=str(Path(argv[0]).parent))
 
         after = _snapshot(out_dir)
-        new_files = sorted(after - before)
+        # new OR rewritten: a re-run over an earlier export overwrites the same names
+        new_files = sorted(k for k, v in after.items() if before.get(k) != v)
         job.produced = len(new_files)
+        self._converted = sum(1 for f in new_files
+                              if Path(f).suffix.lower() in CONVERTED_EXTS)
         job.finished = time.time()
 
         if self._cancel.is_set():
@@ -1024,15 +1032,16 @@ def _quote(arg: str) -> str:
     return f'"{arg}"' if " " in arg else arg
 
 
-def _snapshot(root: Path) -> set[str]:
+def _snapshot(root: Path) -> dict[str, tuple[int, int]]:
     if not root.is_dir():
-        return set()
-    out = set()
+        return {}
+    out = {}
     for p in root.rglob("*"):
         if p.is_file():
             try:
-                out.add(str(p.relative_to(root)))
-            except ValueError:
+                st = p.stat()
+                out[str(p.relative_to(root))] = (st.st_mtime_ns, st.st_size)
+            except (ValueError, OSError):
                 continue
     return out
 
@@ -1092,9 +1101,17 @@ def write_manifest(job: Job, out_dir: Path, files: list[Path], argv: list[str]) 
     for p in files:
         loc = p if p.is_file() else None
         if loc is None:
-            # organise() may have moved it
-            matches = list(out_dir.rglob(p.name))
-            loc = matches[0] if matches else None
+            # organise() may have moved it - to a known place, so look there first;
+            # searching by bare name picks the wrong file when names repeat
+            try:
+                moved = out_dir / categorise(p) / p.relative_to(out_dir)
+            except ValueError:
+                moved = None
+            if moved is not None and moved.is_file():
+                loc = moved
+            else:
+                matches = list(out_dir.rglob(p.name))
+                loc = matches[0] if matches else None
         if loc is None or not loc.is_file():
             continue
         try:

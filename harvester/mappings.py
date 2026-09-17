@@ -91,7 +91,10 @@ def find_local(game: str, extra_roots: list[Path] | None = None) -> MappingHit |
             continue
         for f in found:
             # score against the file name and its parent folder, take the better
-            score = max(_similar(game, f.stem), _similar(game, f.parent.name))
+            # ...and the root itself: UE4SS writes <Game>/.../Win64/Mappings.usmap, where
+            # neither the file nor its folder names the game but the root we were given does
+            score = max(_similar(game, f.stem), _similar(game, f.parent.name),
+                        _similar(game, Path(root).name))
             if root == mappings_dir() and len(found) == 1 and score < 0.5:
                 score = 0.5          # a lone file in your own folder is worth offering
             if best is None or score > best.score:

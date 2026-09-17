@@ -164,6 +164,10 @@ def looks_like_mount_point(block: bytes) -> bool:
     if not (2 <= length <= 512):
         return False
     text = block[4:4 + min(length, len(block) - 4)]
+    if length <= len(block) - 4:        # the whole string fits: drop its NUL terminator
+        if text[-1:] != b"\0":
+            return False
+        text = text[:-1]
     if not text:
         return False
     if not all(32 <= b < 127 for b in text):

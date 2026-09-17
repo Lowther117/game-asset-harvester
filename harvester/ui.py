@@ -499,6 +499,7 @@ class App(tk.Tk):
             job.status = "queued"
             job.message = ""
         self.btn_run.configure(state="disabled")
+        self.btn_brute.configure(state="disabled")   # one run at a time: the Runner is shared
         self.btn_cancel.configure(state="normal")
         self.progress.start(12)
         self.status.configure(text="Extracting...")
@@ -515,10 +516,12 @@ class App(tk.Tk):
         self.status.configure(text=f"Looking for mappings for {game}...")
         self.progress.start(12)
 
+        source = self.var_source.get() or "."    # read Tk variables on the Tk thread only
+
         def work():
             self.log(f"Looking for a .usmap for {game}")
             found, note = mapping_lib.resolve(
-                game, extra_roots=[Path(self.var_source.get() or ".")],
+                game, extra_roots=[Path(source)],
                 allow_download=True, log=self.log)
             self._post(lambda: self._mappings_done(found, note))
 
@@ -576,11 +579,13 @@ class App(tk.Tk):
         else:
             self.status.configure(text="No AES key needed, or none found - see the log")
 
-    def _run_brute(self) -> None:
+    def _run_brute(self, scanned: bool = False) -> None:
         """Point and go: scan, fetch what is missing, then try settings until
         something actually converts. This is the whole app in one button."""
-        if not self.jobs and self.var_source.get().strip():
-            self._scan(then=self._run_brute)       # never make him press Scan first
+        if not self.jobs and not scanned and self.var_source.get().strip():
+            # never make him press Scan first. scanned=True on the way back, or a
+            # folder with nothing queueable would rescan itself for ever
+            self._scan(then=lambda: self._run_brute(True))
             return
         opts = self._collect()
         # brute force means brute force: include the findings too weak to queue normally
@@ -613,23 +618,28 @@ class App(tk.Tk):
                  "each job tries settings in turn until one converts something.")
 
         def work():
-            for job in self.jobs:
-                if self.runner._cancel.is_set():
-                    break
-                mapping = opts.mappings
-                if job.needs_mappings and not mapping:
-                    found, note = mapping_lib.resolve(
-                        job.game, extra_roots=[Path(job.source)],
-                        allow_download=True, log=self.log)
-                    if found:
-                        mapping = str(found)
-                        self.log(note)
-                    else:
-                        self.log(note or "No mappings found for this game.")
-                self.runner.run_brute(job, opts, mapping)
-            self._post(self._run_done)
+            try:
+                for job in self.jobs:
+                    if self.runner._cancel.is_set():
+                        break
+                    mapping = opts.mappings
+                    if job.needs_mappings and not mapping:
+                        found, note = mapping_lib.resolve(
+                            job.game, extra_roots=[Path(job.source)],
+                            allow_download=True, log=self.log)
+                        if found:
+                            mapping = str(found)
+                            self.log(note)
+                        else:
+                            self.log(note or "No mappings found for this game.")
+                    self.runner.run_brute(job, opts, mapping)
+            except Exception as exc:  # noqa: BLE001 - never leave the buttons dead
+                self.log(f"!! the run stopped on an unexpected error: {exc}")
+            finally:
+                self._post(self._run_done)
 
         self.runner.running = True
+        self.runner._cancel.clear()     # Runner.start does this; an earlier Cancel must not stick
         threading.Thread(target=work, daemon=True).start()
 
     def _run_done(self) -> None:

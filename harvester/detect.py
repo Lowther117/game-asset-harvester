@@ -213,9 +213,13 @@ def _iter_files(root: Path, limit: int = MAX_SCAN_FILES):
         try:
             key = current.stat()
             key = (key.st_dev, key.st_ino)
-            if key in seen:
-                continue
-            seen.add(key)
+            # st_ino is 0 on filesystems with no file ids (some exFAT / network
+            # drives): every folder would look "already visited" and the scan
+            # would stop at the root. MAX_DEPTH still bounds a link loop there.
+            if key[1]:
+                if key in seen:
+                    continue
+                seen.add(key)
         except OSError:
             pass
         try:

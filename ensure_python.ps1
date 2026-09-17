@@ -46,7 +46,7 @@ if (Get-Command winget -ErrorAction SilentlyContinue) {
     try {
         winget install --id Python.Python.3.12 --scope user --silent `
             --accept-package-agreements --accept-source-agreements | Out-Host
-        $installed = $true
+        $installed = ($LASTEXITCODE -eq 0)   # a failed winget does not throw; fall through to python.org
     } catch { Write-Host "winget install failed: $_" }
 }
 if (-not $installed) {
