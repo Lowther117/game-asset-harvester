@@ -307,6 +307,13 @@ FAILURE_PATTERNS = {
     "fatal": re.compile(r"\*\*\*\s*ERROR:|Fatal [Ee]rror|Unhandled [Ee]xception", re.I),
 }
 PROGRESS_PATTERN = re.compile(r"package\s+(\d+)\s+of\s+(\d+)", re.I)
+# any backend's "n of m" counter or "[nn%]" line: shown at every tenth, never
+# as thousands of near-identical lines or a stream of "... lines like" reminders
+COUNTER_PATTERN = re.compile(r"\[\s*(\d+)\s*/\s*(\d+)\s*\]|\b(\d+)\s*(?:of|/)\s*(\d+)\b")
+PERCENT_PATTERN = re.compile(r"^\s*\[?\s*(\d{1,3})\s*%\s*\]?\s*$")
+BENIGN_PATTERNS = {
+    "font_texture": re.compile(r'Failed to convert texture "Font Texture"', re.I),
+}
 
 SHOW_PER_SHAPE = 8      # lines of any one shape shown in full before collapsing
 REPEAT_EVERY = 2000     # ...then one reminder every this many
@@ -913,6 +920,14 @@ class Runner:
         for rel in new_files:
             cat = categorise(out_dir / rel)
             produced_categories[cat] = produced_categories.get(cat, 0) + 1
+        if new_files and job.status == "done":
+            breakdown = ", ".join(f"{n:,} {cat.lower()}" for cat, n in sorted(
+                produced_categories.items(), key=lambda kv: -kv[1]) if n)
+            job.message = f"{job.produced:,} file(s) in {job.duration:.0f}s: {breakdown}"
+            self.log(f"   written: {breakdown}")
+        if self._counts.get("font_texture"):
+            self.log(f"   {self._counts['font_texture']} font-atlas texture(s) could not be "
+                     f"converted - those are runtime font caches, nothing is missing")
         hints = diagnose(job, opts, self._counts, self._total_packages, job.produced,
                          produced_categories, self._fatal)
         if self._fatal and job.status == "done":
@@ -958,6 +973,7 @@ class Runner:
             self.cancel()
         shown: dict[str, int] = {}
         samples: dict[str, str] = {}
+        last_tenth: dict[str, int] = {}
         started = time.time()
         for line in self._proc.stdout:
             if self._cancel.is_set():
@@ -972,6 +988,27 @@ class Runner:
                     kind = kind or name
                     if name == "fatal" and not self._fatal:
                         self._fatal = line.strip().lstrip("* ").strip()[:200]
+            for name, rx in BENIGN_PATTERNS.items():
+                if rx.search(line):
+                    self._counts[name] = self._counts.get(name, 0) + 1
+            # a bare progress counter: log a milestone every 10% and drop the rest
+            pm = PERCENT_PATTERN.match(line)
+            cm = None if pm else COUNTER_PATTERN.search(line)
+            if pm or (cm and not PROGRESS_PATTERN.search(line)):
+                if pm:
+                    pct = int(pm.group(1))
+                else:
+                    a = int(cm.group(1) or cm.group(3))
+                    b = int(cm.group(2) or cm.group(4))
+                    pct = -1 if (b <= 0 or a > b or b < 50) else a * 100 // b
+                if pct >= 0:
+                    # one counter per phase: loading and exporting each get their own
+                    key = _line_shape(line)
+                    tenth = pct // 10
+                    if tenth > last_tenth.get(key, -1):
+                        last_tenth[key] = tenth
+                        self.log(f"   {line.strip()}")
+                    continue
             m = PROGRESS_PATTERN.search(line)
             if m:
                 kind = "progress"
@@ -1001,6 +1038,15 @@ class Runner:
                                  f"these settings look right, letting it finish "
                                  f"(conversion happens at the end)")
                         self._probe_dir = None
+                # the package counter is progress too: milestones only
+                if self._total_packages:
+                    key = _line_shape(line)
+                    tenth = (done * 100 // self._total_packages) // 10
+                    if tenth <= last_tenth.get(key, -1):
+                        continue
+                    last_tenth[key] = tenth
+                    self.log("   " + line)
+                    continue
             # Throttle by the SHAPE of the line, not by which pattern matched it.
             # umodel alone emits one "Loading package:" and several
             # "IntProperty: unknown ..." lines per asset - tens of thousands of lines
