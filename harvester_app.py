@@ -6,6 +6,8 @@ Modes:
     GameAssetHarvester.exe fetch-backends     download every extraction tool
     GameAssetHarvester.exe backends           print what is installed
     GameAssetHarvester.exe probe <backend>    print a backend's own --help
+    GameAssetHarvester.exe mappings <game>    find a .usmap for a game
+    GameAssetHarvester.exe aeskey <folder>    find and verify the AES key
     GameAssetHarvester.exe extract <source>   run headless
     GameAssetHarvester.exe selftest           check the build and write a report
 """

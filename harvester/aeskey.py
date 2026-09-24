@@ -11,8 +11,8 @@ that decrypts them into that is the key - no guessing left.
 
 Three sources, in order:
   1. keys.json beside the app - every key that ever worked here, by game name
-  2. the shipping exe, scanned for candidates and verified against the pak
-  3. hex strings in any .txt / .json / .ini the user dropped in the keys folder
+  2. hex strings in any .txt / .json / .ini the user dropped in the keys folder
+  3. the shipping exe, scanned for candidates and verified against the pak
 """
 from __future__ import annotations
 
