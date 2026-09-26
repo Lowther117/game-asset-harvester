@@ -17,3 +17,6 @@ keys/
 keys.json
 mappings/
 scripts/
+
+# macOS Finder metadata
+.DS_Store
