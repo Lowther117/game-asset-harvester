@@ -4,6 +4,7 @@ from __future__ import annotations
 import queue
 import threading
 import webbrowser
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
@@ -295,7 +296,11 @@ class App(tk.Tk):
         self.after(120, self._drain)
 
     def _collect(self) -> ExportOptions:
-        self.opts = ExportOptions(
+        # replace(), not a fresh ExportOptions: settings with no widget here
+        # (unity_group, out_format, godot_mode, overwrite) must survive a save
+        self.opts = replace(
+            self.opts,
+            brute=False, backend_override="",
             output_root=self.var_out.get().strip(),
             mesh_format=self.var_mesh.get(),
             texture_format=self.var_tex.get(),
@@ -451,12 +456,16 @@ class App(tk.Tk):
                                  text=f"   ... and {len(files) - 200} more", values=("", "", ""))
 
     def _files_for(self, job: Job):
-        """The container files the scan actually matched for this job."""
+        """The container files the scan actually matched for this job - only the
+        ones under its own target, so two Unity data folders (or two archives)
+        each list their own files rather than both listing everything."""
         if not self.detection:
             return []
+        target = Path(job.target)
         for f in self.detection.findings:
             if f.engine == job.engine:
-                return f.files
+                mine = [p for p in f.files if Path(p) == target or target in Path(p).parents]
+                return mine or ([target] if target.is_file() else [])
         return []
 
     def _on_job_update(self, job: Job) -> None:

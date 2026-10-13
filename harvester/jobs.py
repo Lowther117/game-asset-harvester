@@ -4,7 +4,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import queue
 import re
+import signal
 import shutil
 import subprocess
 import sys
@@ -187,6 +189,17 @@ def build_command(backend: Backend, job: Job, opts: ExportOptions, out_dir: Path
             argv.append("-png")
         elif opts.texture_format == "tga":
             argv.append("-tga")
+        # "none" has to be said out loud or umodel exports that kind anyway, and the
+        # textures-only / meshes-only rungs would just repeat the first one. Only
+        # flags this build lists in its own help are added.
+        skip = []
+        if opts.mesh_format == "none":
+            skip += ["-nomesh", "-nostat"]       # skeletal and static meshes
+        if opts.texture_format == "none":
+            skip.append("-notex")
+        if skip:
+            known = supported_flags("umodel")
+            argv += [f for f in skip if f in known]
         if opts.aes_key.strip():
             argv.append(f"-aes={opts.aes_key.strip()}")
         argv.append(opts.include or "*")
@@ -300,7 +313,7 @@ def _safe(name: str) -> str:
 FAILURE_PATTERNS = {
     "load_failed": re.compile(
         r"could not load .*asset|check game version|failed to (load|read) package", re.I),
-    "key_failed": re.compile(r"aes|decrypt|encrypted", re.I),
+    "key_failed": re.compile(r"\baes\b|decrypt|encrypted", re.I),   # not "phases"
     "mappings": re.compile(r"mappings|usmap|unversioned propert", re.I),
     "sound_crash": re.compile(r"SoundDecoder|USoundWave", re.I),
     # umodel prints this and stops dead - the export ends there, however many
@@ -346,7 +359,8 @@ def _line_shape(line: str) -> str:
 
 
 MAPPINGS_ADVICE = (
-    "Dump one with UE4SS in-game (its DumpMappings command), or find a community "
+    "Dump one with UE4SS in-game (Dumpers tab, \"Generate .usmap file\", or DumpUSMAP() "
+    "from Lua), or find a community "
     ".usmap for this title, then put it in the Mappings field."
 )
 
@@ -472,6 +486,27 @@ def count_converted(out_dir: Path) -> int:
     return count_output(out_dir)[0]
 
 
+def count_new_converted(out_dir: Path, before: dict[str, tuple[int, int]]) -> int:
+    """Converted files written since `before` was taken (new or rewritten). An
+    earlier run's PNGs in the same folder are not this attempt converting."""
+    if not out_dir.is_dir():
+        return 0
+    found = 0
+    for p in out_dir.rglob("*"):
+        if not p.is_file() or p.suffix.lower() not in CONVERTED_EXTS:
+            continue
+        try:
+            st = p.stat()
+            rel = str(p.relative_to(out_dir))
+        except (ValueError, OSError):
+            continue
+        if before.get(rel) != (st.st_mtime_ns, st.st_size):
+            found += 1
+            if found > 4:
+                break
+    return found
+
+
 class Attempt(NamedTuple):
     """One thing to try: a label, the settings, and what to point at."""
     label: str
@@ -498,7 +533,8 @@ def supported_flags(backend_key: str) -> frozenset[str]:
         text = probe_help(backend, timeout=20)
     except Exception:  # noqa: BLE001
         return frozenset()
-    return frozenset(re.findall(r"(?<![\w-])(--?[A-Za-z][\w-]{1,30})", text or ""))
+    # a flag may start with a digit: umodel's -3rdparty
+    return frozenset(re.findall(r"(?<![\w-])(--?[A-Za-z0-9][\w-]{1,30})", text or ""))
 
 
 def _with_flags(opts: ExportOptions, backend_key: str, *flags: str) -> ExportOptions:
@@ -519,7 +555,13 @@ def ue_tag_order(detected: str) -> list[str]:
     major = "5" if "UE5" in detected else "4"
     same = [t for t in UE_GAME_TAGS[1:] if f"UE{major}" in t]
     order = [detected]
-    if detected in same:
+    if detected in same and detected.endswith("_LATEST"):
+        # LATEST is newer than every numbered tag, so the nearest are the newest
+        # (UE4_LATEST sits at the end of the list, and walking back from there
+        # tried 4.20-4.23 first)
+        numbered = [t for t in same if not t.endswith("_LATEST")]
+        order += numbered[:8]
+    elif detected in same:
         i = same.index(detected)
         for step in (1, -1, 2, -2, 3, -3, 4, -4):
             j = i + step
@@ -725,6 +767,7 @@ class Runner:
         self._fatal = ""
         self._key_cache: dict[str, aeskey.KeySearch] = {}
         self._probe_dir: Path | None = None
+        self._probe_before: dict[str, tuple[int, int]] = {}
         self._probe_failed = False
         self._converted = 0
         self.on_update = on_update or (lambda job: None)
@@ -737,10 +780,8 @@ class Runner:
         self._cancel.set()
         proc = self._proc
         if proc and proc.poll() is None:
-            try:
-                proc.terminate()
-            except Exception:  # noqa: BLE001
-                pass
+            # off the calling (UI) thread: taskkill can take a moment
+            threading.Thread(target=_kill_tree, args=(proc,), daemon=True).start()
 
     def start(self, jobs: list[Job], opts: ExportOptions,
               on_finish: Callable[[list[Job]], None] | None = None) -> None:
@@ -868,6 +909,7 @@ class Runner:
             return
 
         before = _snapshot(out_dir)
+        self._probe_before = before
         self.log("")
         self.log(f">> {job.label}"
                  + (f"  (using {backend.name})" if opts.backend_override else ""))
@@ -961,6 +1003,8 @@ class Runner:
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1, encoding="utf-8", errors="replace",
                 creationflags=creation,
+                # elsewhere: its own process group, so Cancel can stop the whole tree
+                start_new_session=(os.name != "nt"),
             )
         except FileNotFoundError:
             self.log(f"   executable not found: {argv[0]}")
@@ -970,14 +1014,46 @@ class Runner:
             return 126
 
         assert self._proc.stdout is not None
+        proc = self._proc
         if self._cancel.is_set():   # Cancel pressed while Popen was starting
             self.cancel()
+        # The output is read on its own thread. A backend that starts a helper
+        # process hands it the same pipe, and once the backend is killed that
+        # helper can hold the pipe open for ever - reading it here would block
+        # Cancel with it.
+        lines: queue.Queue = queue.Queue()
+        done_reading = threading.Event()
+
+        def pump(stream) -> None:
+            try:
+                for raw in stream:
+                    if not done_reading.is_set():
+                        lines.put(raw)
+            except (OSError, ValueError):
+                pass
+            finally:
+                lines.put(None)
+
+        threading.Thread(target=pump, args=(proc.stdout,), daemon=True).start()
         shown: dict[str, int] = {}
         samples: dict[str, str] = {}
         last_tenth: dict[str, int] = {}
         started = time.time()
-        for line in self._proc.stdout:
+        exited_at = 0.0
+        while True:
             if self._cancel.is_set():
+                break
+            try:
+                line = lines.get(timeout=0.25)
+            except queue.Empty:
+                if proc.poll() is not None:
+                    # the backend has gone but something it started still has the
+                    # pipe: give stragglers a moment, then stop waiting on it
+                    exited_at = exited_at or time.time()
+                    if time.time() - exited_at > 3:
+                        break
+                continue
+            if line is None:
                 break
             line = line.rstrip()
             if not line:
@@ -1022,17 +1098,14 @@ class Runner:
                         done >= PROBE_PACKAGES or time.time() - started > PROBE_SECONDS):
                     failed = self._counts.get("load_failed", 0)
                     ratio = failed / max(done, 1)
-                    if count_converted(self._probe_dir):
+                    if count_new_converted(self._probe_dir, self._probe_before):
                         self.log("   probe: already converting - letting it run")
                         self._probe_dir = None
                     elif ratio > PROBE_FAIL_RATIO:
                         self.log(f"   probe: {failed} of {done} packages failed to load "
                                  f"({ratio:.0%}) - wrong settings, moving on")
                         self._probe_failed = True
-                        try:
-                            self._proc.terminate()
-                        except Exception:  # noqa: BLE001
-                            pass
+                        _kill_tree(proc)
                         break
                     else:
                         self.log(f"   probe: {done} packages in, {failed} load failure(s) - "
@@ -1062,7 +1135,19 @@ class Runner:
                     self.log(f"   ... {seen} lines like \"{samples[shape]}\"")
                 continue
             self.log("   " + line)
-        self._proc.wait()
+        done_reading.set()
+        while True:
+            try:
+                proc.wait(timeout=0.5)
+                break
+            except subprocess.TimeoutExpired:
+                if self._cancel.is_set() or self._probe_failed:
+                    _kill_tree(proc, force=True)
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        self.log("   the backend did not stop when asked - leaving it")
+                    break
         hidden = sum(c - SHOW_PER_SHAPE for c in shown.values() if c > SHOW_PER_SHAPE)
         if hidden:
             self.log(f"   ({hidden} repetitive line(s) hidden, "
@@ -1070,9 +1155,36 @@ class Runner:
             for shape, count in sorted(shown.items(), key=lambda kv: -kv[1])[:5]:
                 if count > SHOW_PER_SHAPE:
                     self.log(f"     x{count}  {samples[shape]}")
-        rc = self._proc.returncode
+        rc = proc.returncode if proc.returncode is not None else 1
         self._proc = None
         return rc
+
+
+def _kill_tree(proc: subprocess.Popen, force: bool = False) -> None:
+    """Stop a backend and everything it started.
+
+    terminate() alone only reaches the backend itself; a helper it spawned keeps
+    running and keeps the output pipe open. On Windows taskkill /T takes the whole
+    tree; elsewhere the backend was started in its own process group.
+    """
+    if os.name == "nt":
+        try:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=15,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except Exception:  # noqa: BLE001
+            pass
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL if force else signal.SIGTERM)
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        if proc.poll() is None:
+            proc.kill() if force else proc.terminate()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _quote(arg: str) -> str:

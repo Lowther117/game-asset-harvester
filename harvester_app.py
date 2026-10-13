@@ -518,8 +518,13 @@ def cmd_selftest(_args) -> int:
             ladder = brute_attempts(job, ExportOptions(output_root=tmp))
             check(f"{key} has a brute-force ladder", len(ladder) >= 2,
                   f"{len(ladder)} attempt(s)")
+            # a build whose help lists the extra flags is allowed them; any other
+            # flag is one nobody checked this build understands
+            known = jobs_mod.supported_flags(key)
+            unverified = sorted({t.split("=")[0] for a in ladder
+                                 for t in a.opts.extra_args.split()} - known)
             check(f"{key} adds no flag it has not verified",
-                  all(not a.opts.extra_args for a in ladder), "clean")
+                  not unverified, ", ".join(unverified) or "clean")
 
     # the AES key finder: the cipher itself, then a whole synthetic encrypted game
     from harvester import aes, aeskey

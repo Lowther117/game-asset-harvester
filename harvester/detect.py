@@ -194,12 +194,13 @@ class Detection:
         return "\n".join(lines)
 
 
-def _iter_files(root: Path, limit: int = MAX_SCAN_FILES):
+def _iter_files(root: Path, limit: int = MAX_SCAN_FILES, state: dict | None = None):
     """Every file under root, to the bottom.
 
     Symlinked directories are walked but never followed twice, and a directory
     already visited by another path is skipped, so a folder that links to its own
-    parent cannot spin forever.
+    parent cannot spin forever. If MAX_SCAN_SECONDS runs out first,
+    state["timed_out"] is set so the caller can say the scan is incomplete.
     """
     import time as _time
     count = 0
@@ -239,6 +240,8 @@ def _iter_files(root: Path, limit: int = MAX_SCAN_FILES):
             except OSError:
                 continue
         if count and _time.monotonic() > deadline:
+            if state is not None:
+                state["timed_out"] = True
             return
 
 
@@ -279,7 +282,8 @@ def detect(root: Path, limit: int = MAX_SCAN_FILES) -> Detection:
                 if where in seen or len(seen) < 400:
                     seen[where] = seen.get(where, 0) + 1
 
-    for entry, is_dir in _iter_files(root, limit):
+    walk_state: dict = {}
+    for entry, is_dir in _iter_files(root, limit, walk_state):
         rel = str(entry.relative_to(root)) if entry != root else entry.name
         for rx, engine, weight in marker_rx:
             if rx.search(rel) or rx.search(entry.name):
@@ -295,6 +299,14 @@ def detect(root: Path, limit: int = MAX_SCAN_FILES) -> Detection:
                 and _godot_embedded(entry):
             add("godot", 12, entry)
     truncated = scanned >= limit
+    if walk_state.get("timed_out"):
+        # a slow drive or a huge tree: what was found is real, but it is not
+        # everything, so say so rather than present it as a complete scan
+        truncated = True
+        stop = (f"the scan hit its {MAX_SCAN_SECONDS:.0f}-second limit after {scanned:,} "
+                f"files, so containers further in may be missing - pick the game's own "
+                f"folder rather than a whole drive")
+        _resolve_note = f"{_resolve_note}; {stop}" if _resolve_note else stop
 
     # UE5 containers imply UE, but .pak alone next to .utoc should not split the vote
     if "ue5" in scores and "ue4" in scores:
@@ -344,8 +356,10 @@ def detect(root: Path, limit: int = MAX_SCAN_FILES) -> Detection:
     # A handful of .dat/.bin files is not an archive format, it is just files. On its own
     # that used to raise a QuickBMS job with no script, which can only ever fail. Keep the
     # finding so the scan still reports what it saw, but flag it so nothing is queued.
+    # However many of them there are: twenty .dat files are still not an archive
+    # format, and each would become a QuickBMS job that fails for want of a script.
     for f in findings:
-        if f.engine == "generic" and strongest.get("generic", 0) < 5 and f.score < 8:
+        if f.engine == "generic" and strongest.get("generic", 0) < 5:
             f.weak = True
 
     # the engine VERSION, not just the family: sending the wrong -g tag is what
@@ -379,13 +393,13 @@ def all_targets(root: Path, finding: Finding) -> list[Path]:
     if finding.engine in ("unity",):
         out = []
         for spot in finding.locations:
-            p = spot
-            if p.name.lower().endswith("_data") or p.name.lower() == "data":
-                pass
-            elif p.parent.name.lower().endswith("_data"):
-                p = p.parent
+            # StreamingAssets/aa/... belongs to the *_Data folder above it, which
+            # AssetStudio already reads - a job of its own extracts it twice
+            p = _unity_data_dir(spot, root) or spot
             if p not in out:
                 out.append(p)
+        # a folder inside another target is already covered by that target
+        out = [p for p in out if not any(o != p and o in p.parents for o in out)]
         return out or [_input_target(root, finding)]
     if finding.engine == "godot":
         out = [f for f in finding.files if f.suffix.lower() == ".pck"]
@@ -394,6 +408,17 @@ def all_targets(root: Path, finding: Finding) -> list[Path]:
     if finding.engine == "generic":
         return finding.files[:64] or [root]
     return list(finding.locations) or [_input_target(root, finding)]
+
+
+def _unity_data_dir(spot: Path, root: Path) -> Path | None:
+    """The nearest *_Data (or Data) folder at or above spot, without leaving root."""
+    for p in (spot, *spot.parents):
+        name = p.name.lower()
+        if name.endswith("_data") or name == "data":
+            return p
+        if p == root or root not in p.parents:
+            break
+    return None
 
 
 def common_root(paths_: list[Path], limit: Path) -> Path:

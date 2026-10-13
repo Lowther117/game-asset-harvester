@@ -68,12 +68,14 @@ Everything below is for when you want to drive it by hand.
    listed underneath, so you can see exactly what it is working from.
 3. Set the output folder and formats. **Show command** prints the exact command line
    it is about to run, which is the fastest way to see why something is off.
-4. **Run once with these settings**. Live output in the Log tab, **Cancel** stops it.
+4. **Run once with these settings**. Live output in the Log tab, **Cancel** stops it —
+   the backend and anything it started, so a helper process cannot keep it hanging.
 
 ### The whole folder, not the first thing it finds
 
 The scan walks the entire tree — 32 levels deep, half a million files, with a two-minute
-ceiling so a mistakenly-picked drive root cannot hang the app. A modern install scatters
+ceiling so a mistakenly-picked drive root cannot hang the app. A scan that runs into either
+limit says so ("stopped early") rather than presenting a partial result as the whole game. A modern install scatters
 containers across base game, DLC, plugin and chunk folders, and the scan reports every one
 of them rather than the first.
 
@@ -82,7 +84,9 @@ job is pointed at the folder that contains all of them and covers the lot in a s
 pass; if that turns out not to reach everything, the brute-force ladder retries one folder
 at a time. AssetStudio, Godot RE Tools and QuickBMS each take **one** archive or data
 folder, so every location found gets its own job — a game with a launcher and two bundled
-mini-games produces three Unity jobs, not one.
+mini-games produces three Unity jobs, not one. Bundles under a data folder (Addressables in
+`<Game>_Data\StreamingAssets\aa`) belong to that folder's job rather than getting a second
+one that would extract them twice.
 
 The window opens in the Phosphor purple theme (the same look as Winnow). The theme
 button in the status bar (or **Ctrl+D**) cycles Phosphor → Dark → Light, and the
@@ -222,8 +226,8 @@ verbatim, converts nothing, and **exits 0**. You get a folder of `.ubulk` and no
 The scan flags this before you run — the results table says **"needs a .usmap"** — and
 after a run that converted nothing the app says so outright rather than reporting success.
 
-To get one: dump it with UE4SS in-game (its `DumpMappings` command), or find a community
-`.usmap` for the title, then point the **Mappings .usmap** field at it.
+To get one: dump it with UE4SS in-game (GUI console → Dumpers → *Generate .usmap file*, or
+`DumpUSMAP()` from Lua, as above), or find a community `.usmap` for the title, then point the **Mappings .usmap** field at it.
 
 ### When a run goes wrong
 
@@ -251,8 +255,8 @@ Two cases used to produce a run that could never work:
   job appeared beside the umodel one and found nothing. `.umap` and `.u` are no longer
   treated as modern-Unreal evidence on their own — something genuinely UE4+ (`.pak`,
   `.uasset`, `.uexp`, `.ubulk`, `.utoc`, `.ucas`) has to be present too.
-- A handful of loose `.dat`/`.bin` files is not an archive format. Those findings are now
-  flagged **weak**: still reported in the scan so you can see what was there, but not
+- Loose `.dat`/`.bin` files — three or thirty — are not an archive format. When those (or
+  `.arc`/`.wad`) are the only generic evidence, the finding is flagged **weak**: still reported in the scan so you can see what was there, but not
   queued, because QuickBMS cannot open them without a game-specific `.bms` script.
   **Extract everything** still tries them.
 
@@ -289,9 +293,7 @@ does try everything.
 
 `--game` defaults to `auto` (use the detected version). `--dry-run` prints the detection
 evidence and the exact commands without running anything — the quickest way to see what
-version the scan thinks a game is.
-
-`--dry-run` prints the commands and runs nothing. Use it before a long job.
+version the scan thinks a game is. Use it before a long job.
 
 ## Where things are written
 
