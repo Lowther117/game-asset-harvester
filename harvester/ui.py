@@ -30,7 +30,8 @@ class App(tk.Tk):
         self.minsize(880, 600)
 
         self.opts = config.load()
-        self.dark = bool(self.opts.dark)
+        self.theme_name = theme.from_settings({"theme": self.opts.theme, "dark": self.opts.dark})
+        self.dark = theme.is_dark(self.theme_name)
         self.detection: Detection | None = None
         self.jobs: list[Job] = []
         self.prefer: dict[str, str] = {}
@@ -59,7 +60,7 @@ class App(tk.Tk):
         self.status.pack(side="left")
         self.progress = ttk.Progressbar(bar, mode="indeterminate", length=180)
         self.progress.pack(side="right")
-        self.btn_theme = ttk.Button(bar, text="Light", width=6, style="Theme.TButton",
+        self.btn_theme = ttk.Button(bar, text="Dark", width=9, style="Theme.TButton",
                                     command=self._toggle_theme)
         self.btn_theme.pack(side="right", padx=(0, PAD))
         ttk.Button(bar, text="Reset to Downloads", style="Theme.TButton",
@@ -82,15 +83,9 @@ class App(tk.Tk):
 
     # ----------------------------------------------------------------- theme
     def _apply_theme(self) -> None:
-        c = theme.apply(self, self.dark)
+        c = theme.apply(self, self.theme_name)
         self.c = c
         style = ttk.Style(self)
-        # widgets this app uses that the shared module has no style for
-        style.configure("TLabelframe", background=c["bg"], bordercolor=c["border"])
-        style.configure("TLabelframe.Label", background=c["bg"], foreground=c["dim"])
-        style.configure("Horizontal.TProgressbar", background=c["accent"],
-                        troughcolor=c["panel"], bordercolor=c["border"],
-                        lightcolor=c["accent"], darkcolor=c["accent"])
         style.configure("Theme.TButton", padding=(8, 1))   # fits the status bar
         mono = theme.mono_family(self)
         ui = theme.ui_family(self)
@@ -102,15 +97,17 @@ class App(tk.Tk):
                 selectforeground=c["text"], highlightthickness=1,
                 highlightbackground=c["field_border"], highlightcolor=c["accent"],
                 relief="flat", borderwidth=0, padx=6, pady=4)
-        self.btn_theme.configure(text="Light" if self.dark else "Dark")
+        self.btn_theme.configure(text=theme.short_label(theme.next_theme(self.theme_name)))
 
     def _on_ctrl_d(self, _event=None) -> str:
         self._toggle_theme()
         return "break"
 
     def _toggle_theme(self) -> None:
-        self.dark = not self.dark
+        self.theme_name = theme.next_theme(self.theme_name)
+        self.dark = theme.is_dark(self.theme_name)
         self._apply_theme()
+        self.opts.theme = self.theme_name
         self.opts.dark = self.dark
         config.save(self.opts)
 
@@ -312,6 +309,7 @@ class App(tk.Tk):
             write_manifest=bool(self.var_manifest.get()),
             extra_args=self.var_extra.get().strip(),
             dark=self.dark,
+            theme=self.theme_name,
             save_dir=self.opts.save_dir,
         )
         config.save(self.opts)

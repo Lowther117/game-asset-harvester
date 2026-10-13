@@ -80,6 +80,7 @@ class ExportOptions:
     brute: bool = False          # set by the brute-force ladder, not by the user; stops
                                  # the log claiming "you overrode the detected value"
     dark: bool = True            # UI theme; lives here so it shares harvester-settings.json
+    theme: str = ""              # phosphor | dark | light; empty = decide from `dark` (old files)
     save_dir: str = ""           # default save folder; empty = the user's Downloads
 
 

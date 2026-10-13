@@ -84,8 +84,9 @@ at a time. AssetStudio, Godot RE Tools and QuickBMS each take **one** archive or
 folder, so every location found gets its own job — a game with a launcher and two bundled
 mini-games produces three Unity jobs, not one.
 
-The window opens in dark mode. The **Light** / **Dark** button in the status bar
-(or **Ctrl+D**) switches, and the choice is remembered in `harvester-settings.json`.
+The window opens in the Phosphor purple theme (the same look as Winnow). The theme
+button in the status bar (or **Ctrl+D**) cycles Phosphor → Dark → Light, and the
+choice is remembered in `harvester-settings.json`.
 
 Output goes to your Downloads folder by default (`Downloads\HarvestedAssets`, pre-filled
 in the output field); **Default save folder…** in the status bar changes that for good,
