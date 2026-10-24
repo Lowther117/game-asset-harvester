@@ -175,22 +175,38 @@ def looks_like_mount_point(block: bytes) -> bool:
     return text[:1] in (b".", b"/") or text[:3] == b"../"
 
 
-def verify(key_hex: str, index: PakIndex) -> bool:
+def _index_head(index: PakIndex) -> bytes | None:
+    """The first two encrypted blocks of the index, or None if unreadable."""
+    try:
+        with index.pak.open("rb") as fh:
+            fh.seek(index.offset)
+            head = fh.read(32)
+    except OSError:
+        return None
+    if len(head) < 32:
+        return None
+    return head
+
+
+def verify(key_hex: str, index: PakIndex, head: bytes | None = None) -> bool:
     try:
         key = bytes.fromhex(normalise(key_hex)[2:])
     except ValueError:
         return False
     if len(key) != 32:
         return False
-    try:
-        with index.pak.open("rb") as fh:
-            fh.seek(index.offset)
-            head = fh.read(32)
-    except OSError:
+    if head is None:
+        head = _index_head(index)
+        if head is None:
+            return False
+    rk = aes.expand_key(key)
+    first = aes.decrypt_block(head[:16], rk)
+    # Both branches of looks_like_mount_point need a length of 2-512 (either
+    # sign) and a text starting with '.' or '/', all inside the first block -
+    # so a wrong key is turned away without decrypting the second one.
+    if not (2 <= abs(struct.unpack_from("<i", first, 0)[0]) <= 512) or first[4] not in b"./":
         return False
-    if len(head) < 32:
-        return False
-    return looks_like_mount_point(aes.ecb_decrypt(head, key))
+    return looks_like_mount_point(first + aes.decrypt_block(head[16:32], rk))
 
 
 # ---------------------------------------------------------------- the exe side
@@ -344,11 +360,12 @@ def find(game_root: Path, game: str = "", paks: list[Path] | None = None,
         result.notes.append("no pak with an encrypted index under this folder, so no key is needed")
         return result
     index = indexes[0]
+    head = _index_head(index)     # read once, not once per candidate
     log(f"   encrypted index in {index.pak.name} - looking for the AES key")
 
     def check(keys: list[str], source: str) -> bool:
         for key in keys:
-            if verify(key, index):
+            if verify(key, index, head):
                 result.verified.append(key)
                 result.notes.append(f"{key} decrypts {index.pak.name}'s index ({source})")
                 log(f"   AES key found: {key}  ({source})")
@@ -373,7 +390,7 @@ def find(game_root: Path, game: str = "", paks: list[Path] | None = None,
         tried = 0
         for key, how in candidates_from_bytes(blob):
             tried += 1
-            if verify(key, index):
+            if verify(key, index, head):
                 result.verified.append(key)
                 result.notes.append(f"{key} decrypts {index.pak.name}'s index "
                                     f"(found in {exe.name} as {how})")

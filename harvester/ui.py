@@ -271,26 +271,39 @@ class App(tk.Tk):
 
     def _drain(self) -> None:
         wrote = False
+        pending: list[str] = []
+
+        def flush() -> None:
+            # one widget insert and one log-file open per batch, not per line:
+            # a busy backend queues hundreds of lines between ticks
+            if not pending:
+                return
+            chunk = "".join(pending)
+            pending.clear()
+            self.text.configure(state="normal")
+            self.text.insert("end", chunk)
+            self.text.configure(state="disabled")
+            try:
+                with paths.log_path().open("a", encoding="utf-8") as fh:
+                    fh.write(chunk)
+            except OSError:
+                pass
+
         try:
             while True:
                 line = self._q.get_nowait()
                 if callable(line):
+                    flush()
                     try:
                         line()
                     except Exception as exc:  # noqa: BLE001
                         self.log(f"!! {exc}")
                     continue
-                self.text.configure(state="normal")
-                self.text.insert("end", line + "\n")
-                self.text.configure(state="disabled")
+                pending.append(line + "\n")
                 wrote = True
-                try:
-                    with paths.log_path().open("a", encoding="utf-8") as fh:
-                        fh.write(line + "\n")
-                except OSError:
-                    pass
         except queue.Empty:
             pass
+        flush()
         if wrote:
             self.text.see("end")
         self.after(120, self._drain)
