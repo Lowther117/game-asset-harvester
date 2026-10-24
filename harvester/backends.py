@@ -83,7 +83,10 @@ class Backend:
 
 def _match_exe(root: Path, patterns: Sequence[str]) -> Path | None:
     try:
-        candidates = [p for p in root.rglob("*") if p.is_file()]
+        # suffix first: only .exe / extensionless names can match below, so the
+        # hundreds of DLLs beside a .NET backend are not each stat()ed
+        candidates = [p for p in root.rglob("*")
+                      if p.suffix.lower() in (".exe", "") and p.is_file()]
     except OSError:
         return None
     exe_like = [

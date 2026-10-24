@@ -44,6 +44,7 @@ class MappingHit:
     game: str
     score: float
     local: Path | None = None
+    branch: str = ""     # archive branch the path was listed from, so fetch() need not ask again
 
     @property
     def label(self) -> str:
@@ -128,13 +129,13 @@ def archive_index(log: Callable[[str], None] = print) -> tuple[list[str], str]:
 
 def search_archive(game: str, log: Callable[[str], None] = print,
                    limit: int = 5) -> list[MappingHit]:
-    files, _branch = archive_index(log)
+    files, branch = archive_index(log)
     scored: list[MappingHit] = []
     for path in files:
         top = path.split("/")[0]
         score = max(_similar(game, top), _similar(game, Path(path).stem))
         if score >= 0.55:
-            scored.append(MappingHit(path, top, score))
+            scored.append(MappingHit(path, top, score, branch=branch))
     scored.sort(key=lambda h: -h.score)
     return scored[:limit]
 
@@ -143,7 +144,7 @@ def fetch(hit: MappingHit, log: Callable[[str], None] = print) -> Path:
     """Download an archive entry into the local mappings folder."""
     if hit.local:
         return hit.local
-    _files, branch = archive_index(log)
+    branch = hit.branch or archive_index(log)[1]
     url = ARCHIVE_RAW.format(repo=ARCHIVE_REPO, branch=branch,
                              path=urllib.parse.quote(hit.path))
     log(f"  {url}")

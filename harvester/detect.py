@@ -263,7 +263,11 @@ def detect(root: Path, limit: int = MAX_SCAN_FILES) -> Detection:
         f = Finding(engine, 10, [root], [root.name])
         return Detection(root, [f], 1, False)
 
-    marker_rx = [(re.compile(p, re.I), engine, w) for p, engine, w in MARKERS]
+    # rel always ends with entry.name, so a pattern with no "^" that is anchored
+    # with "$" matches the name only if it matches rel too - only the "^" ones
+    # need the separate name test.
+    marker_rx = [(re.compile(p, re.I), engine, w, "^" in p or not p.endswith("$"))
+                 for p, engine, w in MARKERS]
 
     def add(engine: str, weight: int, entry: Path | None = None,
             token: str = "marker") -> None:
@@ -285,8 +289,8 @@ def detect(root: Path, limit: int = MAX_SCAN_FILES) -> Detection:
     walk_state: dict = {}
     for entry, is_dir in _iter_files(root, limit, walk_state):
         rel = str(entry.relative_to(root)) if entry != root else entry.name
-        for rx, engine, weight in marker_rx:
-            if rx.search(rel) or rx.search(entry.name):
+        for rx, engine, weight, name_too in marker_rx:
+            if rx.search(rel) or (name_too and rx.search(entry.name)):
                 add(engine, weight)
         if is_dir:
             continue

@@ -517,7 +517,6 @@ class Attempt(NamedTuple):
 BRUTE_MAX = 24            # a ceiling, not a target - most games take one or two
 
 
-@lru_cache(maxsize=16)
 def supported_flags(backend_key: str) -> frozenset[str]:
     """Flags the INSTALLED backend actually advertises in its own --help.
 
@@ -527,8 +526,17 @@ def supported_flags(backend_key: str) -> frozenset[str]:
     that would have half-worked into an instant parse error.
     """
     backend = REGISTRY.get(backend_key)
-    if not backend or not backend.installed():
+    exe = backend.find_exe() if backend else None
+    if not exe:
         return frozenset()
+    # cached per executable, so a backend fetched while the app is
+    # open is read afresh rather than staying "not installed" for the session
+    return _help_flags(backend_key, str(exe))
+
+
+@lru_cache(maxsize=16)
+def _help_flags(backend_key: str, exe: str) -> frozenset[str]:
+    backend = REGISTRY[backend_key]
     try:
         text = probe_help(backend, timeout=20)
     except Exception:  # noqa: BLE001
