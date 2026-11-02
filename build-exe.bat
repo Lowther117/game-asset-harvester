@@ -24,7 +24,7 @@ if not exist "%VPY%" goto :fail_venv
 
 call :head "3/6  Installing PyInstaller"
 "%VPY%" -m pip install --upgrade pip --only-binary :all: >> "%LOG%" 2>&1
-"%VPY%" -m pip install --only-binary :all: pyinstaller >> "%LOG%" 2>&1
+"%VPY%" -m pip install --only-binary :all: "pyinstaller>=6.11,<7" >> "%LOG%" 2>&1
 if errorlevel 1 goto :fail_pip
 
 call :head "4/6  Downloading the extraction backends"
