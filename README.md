@@ -88,8 +88,8 @@ mini-games produces three Unity jobs, not one. Bundles under a data folder (Addr
 `<Game>_Data\StreamingAssets\aa`) belong to that folder's job rather than getting a second
 one that would extract them twice.
 
-The window opens in the Phosphor purple theme (the same look as Winnow). The theme
-button in the status bar (or **Ctrl+D**) cycles Phosphor → Dark → Light, and the
+The window opens in the Phosphor glass theme (the same look as the website and Winnow). The theme
+button in the status bar (or **Ctrl+D**) cycles Glass → Phosphor → Dark → Light, and the
 choice is remembered in `harvester-settings.json`.
 
 Output goes to your Downloads folder by default (`Downloads\HarvestedAssets`, pre-filled
